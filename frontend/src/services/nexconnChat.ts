@@ -1,5 +1,7 @@
 import {
   NCEngine,
+  AreaCode,
+  LogLevel,
   GroupChannel,
   GroupChannelIdentifier,
   SendTextMessageParams,
@@ -15,9 +17,11 @@ export class NexconnChatClient {
   private static instance: NexconnChatClient;
   private isInitialized = false;
   private currentUserId: string | null = null;
+  private currentToken: string | null = null;
   private connectionState: NexconnConnectionState = 'DISCONNECTED';
   private messageListeners: Map<string, (msg: ChatMessage) => void> = new Map();
   private statusListeners: Set<(state: NexconnConnectionState) => void> = new Set();
+  private joinedGroups: Set<string> = new Set();
 
   private constructor() {
     this.setupGlobalHandlers();
@@ -70,7 +74,7 @@ export class NexconnChatClient {
       });
       NCEngine.addMessageHandler('sahaay_msg_handler', msgHandler);
     } catch (err) {
-      console.warn('[Nexconn] Note: Handler registration warning:', err);
+      console.warn('[Nexconn] Handler setup note:', err);
     }
   }
 
@@ -86,20 +90,26 @@ export class NexconnChatClient {
   }
 
   /**
-   * Initializes the Nexconn client engine with public App Key
+   * Initializes the Nexconn client engine with public App Key and Singapore data center
    */
   public initialize(appKey: string): boolean {
-    if (!appKey) {
+    const cleanKey = (appKey || '').trim();
+    if (!cleanKey) {
       this.setConnectionState('CREDENTIALS_MISSING');
       return false;
     }
 
     try {
-      NCEngine.initialize({ appKey });
+      // Must be called with areaCode: AreaCode.SG matching data center
+      NCEngine.initialize({
+        appKey: cleanKey,
+        areaCode: AreaCode.SG,
+        logLevel: LogLevel.DEBUG,
+      });
       this.isInitialized = true;
-      console.log('✅ Nexconn Engine initialized successfully with App Key');
+      console.log('✅ Nexconn Engine initialized successfully (Singapore Data Center)');
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error('❌ Failed to initialize Nexconn Engine:', err);
       this.setConnectionState('FAILED');
       return false;
@@ -110,26 +120,45 @@ export class NexconnChatClient {
    * Connects to Nexconn servers using user access token issued by backend
    */
   public async connect(token: string, userId: string): Promise<boolean> {
-    if (!this.isInitialized) {
-      console.warn('[Nexconn] Client not yet initialized with App Key.');
+    const cleanToken = (token || '').trim();
+    if (!this.isInitialized || !cleanToken) {
+      console.warn('[Nexconn] Client not yet initialized or token missing.');
       return false;
     }
 
+    // Already connected as this user with same token
+    if (this.connectionState === 'CONNECTED' && this.currentUserId === userId && this.currentToken === cleanToken) {
+      console.log('Already connected to Nexconn as user:', userId);
+      return true;
+    }
+
+    // If switching user, disconnect previous connection first
+    if (this.currentUserId && this.currentUserId !== userId) {
+      try {
+        await NCEngine.disconnect();
+        this.joinedGroups.clear();
+      } catch {}
+    }
+
     this.currentUserId = userId;
+    this.currentToken = cleanToken;
     this.setConnectionState('CONNECTING');
 
     try {
-      const result = await NCEngine.connect({ token });
+      console.log(`[Nexconn] Connecting with token for user: ${userId}...`);
+      const result = await NCEngine.connect({ token: cleanToken });
+      console.log('[Nexconn] Connect response:', result);
+
       if (result && result.isOk) {
         console.log('✅ Nexconn connected successfully as user:', result.data?.userId || userId);
         this.setConnectionState('CONNECTED');
         return true;
       } else {
-        console.warn('⚠️ Nexconn connect returned not OK:', result?.msg);
+        console.warn('⚠️ Nexconn connect returned not OK:', result?.code, result?.msg);
         this.setConnectionState('FAILED');
         return false;
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('❌ Nexconn connection exception:', err);
       this.setConnectionState('FAILED');
       return false;
@@ -137,23 +166,33 @@ export class NexconnChatClient {
   }
 
   /**
-   * Ensure group exists on Nexconn for the assistance request
+   * Ensures group exists on Nexconn for the assistance request and joins the channel
    */
   public async ensureGroupChannel(channelId: string, groupName: string, memberUserIds: string[]): Promise<boolean> {
+    const group = new GroupChannel(channelId);
+
+    // 1. Attempt to create the group if it's new
     try {
       const result = await GroupChannel.createGroup({
         groupId: channelId,
         groupName: groupName || `Sahaay Assistance #${channelId}`,
         inviteeUserIds: memberUserIds,
       });
-
-      console.log('GroupChannel createGroup result:', result);
-      return true;
+      console.log('[Nexconn] GroupChannel.createGroup result:', result);
     } catch (err: any) {
-      // If group already exists, this is idempotent
-      console.log('Group channel ready / existing:', err?.message || err);
-      return true;
+      console.log('[Nexconn] Group creation note:', err?.message || err);
     }
+
+    // 2. Explicitly join the group so this user has write permissions
+    try {
+      const joinResult = await group.join();
+      console.log('[Nexconn] GroupChannel.join result:', joinResult);
+      this.joinedGroups.add(channelId);
+    } catch (err: any) {
+      console.log('[Nexconn] Group join note:', err?.message || err);
+    }
+
+    return true;
   }
 
   /**
@@ -186,15 +225,33 @@ export class NexconnChatClient {
   }
 
   /**
-   * Sends a text message to the group channel
+   * Sends a text message to the group channel with automatic join-on-demand
    */
   public async sendTextMessage(channelId: string, text: string): Promise<ChatMessage> {
+    if (this.connectionState !== 'CONNECTED') {
+      throw new Error('Nexconn Chat is not connected yet. Please wait a moment for connection.');
+    }
+
     const group = new GroupChannel(channelId);
     const params = new SendTextMessageParams({ text });
 
-    const result = await group.sendMessage(params);
+    // Send message via official SDK
+    let result = await group.sendMessage(params);
+    console.log('[Nexconn] sendMessage result:', result);
+
     if (!result.isOk) {
-      throw new Error(`Failed to send message: ${result.msg || 'Unknown error'}`);
+      console.warn(`[Nexconn] sendMessage returned code ${result.code}: ${result.msg}. Attempting group.join()...`);
+      try {
+        await group.join();
+        result = await group.sendMessage(params);
+        console.log('[Nexconn] Retry sendMessage result:', result);
+      } catch (retryErr: any) {
+        console.warn('[Nexconn] Retry error:', retryErr);
+      }
+    }
+
+    if (!result.isOk) {
+      throw new Error(`Failed to send message: ${result.msg || 'Error code ' + result.code}`);
     }
 
     const rawMsg = result.data;

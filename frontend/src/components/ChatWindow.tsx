@@ -156,34 +156,42 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ request, onRequestUpdate
     const text = inputText.trim();
     if (!text || isSending || !channelId) return;
 
+    if (connectionState !== 'CONNECTED') {
+      setErrorMessage('Nexconn is still establishing connection to the real-time servers. Please wait a moment...');
+      return;
+    }
+
     setIsSending(true);
+    setErrorMessage(null);
+    const sentText = text;
     setInputText('');
 
-    try {
-      // Optimistic message placeholder
-      const tempMsg: ChatMessage = {
-        messageId: `temp_${Date.now()}`,
-        senderUserId: currentUser?.id || '',
-        text,
-        sentTime: Date.now(),
-        isMe: true,
-        status: 'sending',
-      };
-      setMessages((prev) => [...prev, tempMsg]);
+    // Optimistic message placeholder
+    const tempId = `temp_${Date.now()}`;
+    const tempMsg: ChatMessage = {
+      messageId: tempId,
+      senderUserId: currentUser?.id || '',
+      text: sentText,
+      sentTime: Date.now(),
+      isMe: true,
+      status: 'sending',
+    };
+    setMessages((prev) => [...prev, tempMsg]);
 
+    try {
       // Call Nexconn official SDK to send message
-      const sent = await nexconnChat.sendTextMessage(channelId, text);
+      const sent = await nexconnChat.sendTextMessage(channelId, sentText);
       
       // Update optimistic message with real message
       setMessages((prev) =>
-        prev.map((m) => (m.messageId === tempMsg.messageId ? { ...sent, isMe: true } : m))
+        prev.map((m) => (m.messageId === tempId ? { ...sent, isMe: true, status: 'sent' } : m))
       );
     } catch (err: any) {
       console.error('Failed to send Nexconn message:', err);
-      // Mark as error
+      setErrorMessage(`Message send failed: ${err.message || 'Unknown error'}`);
       setMessages((prev) =>
         prev.map((m) =>
-          m.status === 'sending' ? { ...m, status: 'failed' } : m
+          m.messageId === tempId ? { ...m, status: 'failed' } : m
         )
       );
     } finally {

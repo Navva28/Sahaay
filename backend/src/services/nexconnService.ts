@@ -5,28 +5,43 @@ import { config } from '../config/env.js';
  * Nexconn Server Integration Service
  * 
  * Handles secure server-side communications with Nexconn:
- * - Computes HMAC / SHA1 security signature using App-Secret, Nonce, and Timestamp
- * - Issues official user access tokens through Nexconn server endpoints
+ * - Computes HMAC / SHA1 security signature using App-Secret, Nonce, and Timestamp in milliseconds
+ * - Issues official user access tokens through Nexconn server endpoints: POST /v4/auth/access-token/issue
+ * - Targets the regional data center matching the App Key (Singapore: api.sg-light-api.com)
  * - Never leaks App Secret to the client application
  */
 export class NexconnService {
-  private appKey: string;
-  private appSecret: string;
-  private primaryDomain: string;
+  public appKey: string;
+  public appSecret: string;
+  public primaryDomain: string;
+  public secondaryDomain: string;
 
   constructor() {
-    this.appKey = config.nexconn.appKey;
-    this.appSecret = config.nexconn.appSecret;
+    this.appKey = config.nexconn.appKey.trim();
+    this.appSecret = config.nexconn.appSecret.trim();
     this.primaryDomain = config.nexconn.primaryApiDomain.replace(/\/$/, '');
+    this.secondaryDomain = config.nexconn.secondaryApiDomain.replace(/\/$/, '');
   }
 
   /**
-   * Generates standard Nexconn / RongCloud authentication headers
+   * Refreshes credentials from config in case env reloaded
+   */
+  private refreshConfig() {
+    this.appKey = config.nexconn.appKey.trim();
+    this.appSecret = config.nexconn.appSecret.trim();
+    this.primaryDomain = config.nexconn.primaryApiDomain.replace(/\/$/, '');
+    this.secondaryDomain = config.nexconn.secondaryApiDomain.replace(/\/$/, '');
+  }
+
+  /**
+   * Generates standard Nexconn authentication headers
    * Signature = SHA1(AppSecret + Nonce + Timestamp)
+   * Timestamp: Unix timestamp in milliseconds
    */
   private generateAuthHeaders(): Record<string, string> {
+    this.refreshConfig();
     const nonce = Math.floor(Math.random() * 1000000).toString();
-    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const timestamp = Date.now().toString(); // Must be milliseconds
     
     // Hash AppSecret + Nonce + Timestamp
     const hash = crypto.createHash('sha1');
@@ -38,7 +53,8 @@ export class NexconnService {
       'Nonce': nonce,
       'Timestamp': timestamp,
       'Signature': signature,
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'application/json',
+      'X-Request-ID': crypto.randomUUID().replace(/-/g, ''),
     };
   }
 
@@ -46,12 +62,14 @@ export class NexconnService {
    * Check if credentials are configured
    */
   public hasCredentials(): boolean {
+    this.refreshConfig();
     return Boolean(this.appKey && this.appSecret);
   }
 
   /**
    * Issues an official Nexconn chat access token for a given user.
-   * Calls the server endpoint: POST /v4/auth/access-token/issue or /user/getToken.json
+   * Official API: POST https://api.sg-light-api.com/v4/auth/access-token/issue
+   * Body: application/json { userId, name, avatarUrl }
    */
   public async issueUserToken(params: {
     userId: string;
@@ -60,9 +78,9 @@ export class NexconnService {
   }): Promise<{ token: string; userId: string; appKey: string }> {
     const { userId, name, avatarUrl = '' } = params;
 
-    // Check if App Secret & Key are available
+    this.refreshConfig();
+
     if (!this.hasCredentials()) {
-      // If credentials haven't been provided yet, throw clear error so user can supply them
       throw new Error(
         'NEXCONN_CREDENTIALS_MISSING: Please configure NEXCONN_APP_KEY and NEXCONN_APP_SECRET in backend/.env'
       );
@@ -70,48 +88,58 @@ export class NexconnService {
 
     const headers = this.generateAuthHeaders();
     
-    // Prepare form-encoded body according to Nexconn API specs
-    const bodyParams = new URLSearchParams();
-    bodyParams.append('userId', userId);
-    bodyParams.append('name', name);
-    if (avatarUrl) {
-      bodyParams.append('portraitUri', avatarUrl);
-    }
+    // Official JSON payload format
+    const payload = JSON.stringify({
+      userId,
+      name: name || userId,
+      avatarUrl: avatarUrl || undefined,
+    });
 
     const endpoints = [
       `${this.primaryDomain}/v4/auth/access-token/issue`,
-      `${this.primaryDomain}/user/getToken.json`,
-      'https://api.nexconn.ai/v4/auth/access-token/issue',
-      'https://api.nexconn.ai/user/getToken.json'
+      'https://api.sg-light-api.com/v4/auth/access-token/issue',
+      'https://api-b.sg-light-api.com/v4/auth/access-token/issue',
+      'https://api.us-light-api.com/v4/auth/access-token/issue',
     ];
 
     let lastError: any = null;
 
     for (const url of endpoints) {
       try {
+        console.log(`[NexconnService] Requesting token for ${userId} from ${url}...`);
         const response = await fetch(url, {
           method: 'POST',
           headers,
-          body: bodyParams.toString(),
+          body: payload,
         });
 
-        if (response.ok) {
-          const data: any = await response.json();
-          // Nexconn/RongCloud returns { code: 200, userId: "...", token: "..." }
-          if (data && (data.token || (data.data && data.data.token))) {
-            const token = data.token || data.data.token;
+        const data: any = await response.json();
+        console.log(`[NexconnService] Response from ${url}:`, data);
+
+        // Official response: { code: 0, result: { userId, accessToken } }
+        if (data && (data.code === 0 || data.code === 200)) {
+          const token =
+            data.result?.accessToken ||
+            data.result?.token ||
+            data.token ||
+            data.accessToken;
+
+          if (token) {
+            console.log(`✅ [NexconnService] Successfully issued token for ${userId}`);
             return {
               token,
               userId,
               appKey: this.appKey,
             };
           }
-        } else {
-          const errText = await response.text();
-          lastError = new Error(`Nexconn API responded with status ${response.status}: ${errText}`);
         }
-      } catch (err) {
+
+        if (data && data.errorMessage) {
+          lastError = new Error(`Nexconn API Error (${data.code}): ${data.errorMessage}`);
+        }
+      } catch (err: any) {
         lastError = err;
+        console.warn(`[NexconnService] Failed request to ${url}:`, err.message);
       }
     }
 

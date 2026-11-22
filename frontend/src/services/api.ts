@@ -1,6 +1,7 @@
 import { AssistanceRequest, RequestCategory, RequestStatus, User, UserRole } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+export const API_BASE_URL = rawApiUrl.replace(/\/+$/, '');
 
 async function handleResponse<T>(res: Response): Promise<T> {
   const data = await res.json();

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { API_BASE_URL } from '../services/api';
 import { UserRole } from '../types';
 import { 
   Users, 
@@ -42,7 +43,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({ setCurrentTab }) => {
       await login(email.trim(), name.trim(), role, location.trim());
       setCurrentTab('dashboard');
     } catch (err: any) {
-      setError(err.message || 'Login failed');
+      if (err.message === 'Failed to fetch') {
+        setError(`Unable to connect to backend (${API_BASE_URL}). If deployed on Render, the free instance may take 30-50s to wake up, or please verify your backend is running.`);
+      } else {
+        setError(err.message || 'Login failed');
+      }
     }
   };
 

@@ -9,7 +9,8 @@ import {
   Sparkles, 
   ArrowRight,
   UserCheck,
-  Check
+  Check,
+  AlertTriangle
 } from 'lucide-react';
 
 interface LoginPageProps {
@@ -51,6 +52,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({ setCurrentTab }) => {
     }
   };
 
+  const isProductionMisconfigured =
+    typeof window !== 'undefined' &&
+    window.location.hostname !== 'localhost' &&
+    window.location.hostname !== '127.0.0.1' &&
+    API_BASE_URL.includes('localhost');
+
   return (
     <div className="max-w-2xl mx-auto py-12 px-4 sm:px-6">
       <div className="bg-white rounded-3xl shadow-xl border border-slate-200 overflow-hidden">
@@ -67,6 +74,22 @@ export const LoginPage: React.FC<LoginPageProps> = ({ setCurrentTab }) => {
             Choose a demo persona for testing multi-user coordination or register a new identity.
           </p>
         </div>
+
+        {/* Vercel Environment Configuration Notice */}
+        {isProductionMisconfigured && (
+          <div className="mx-6 mt-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-2">
+            <div className="flex items-center gap-2 font-bold text-amber-800">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>Backend Connection Missing in Vercel</span>
+            </div>
+            <p className="text-amber-700 leading-relaxed">
+              This deployed frontend is still attempting to connect to <code>{API_BASE_URL}</code> because <code>VITE_API_URL</code> was missing during the Vercel build.
+            </p>
+            <p className="text-amber-800 font-medium">
+              👉 Go to <strong>Vercel Dashboard → Settings → Environment Variables</strong>, set <code>VITE_API_URL</code> to your Render backend URL (e.g. <code>https://sahaay-api.onrender.com</code>), then go to <strong>Deployments → Redeploy</strong>.
+            </p>
+          </div>
+        )}
 
         {/* Tab switch */}
         <div className="flex border-b border-slate-200">

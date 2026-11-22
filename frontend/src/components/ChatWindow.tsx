@@ -77,7 +77,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ request, onRequestUpdate
         setChannelId(resolvedChannelId);
 
         // 2. Fetch public appKey (configured in frontend env or passed from backend)
-        const appKey = import.meta.env.VITE_NEXCONN_APP_KEY || channelData.appKey;
+        const appKey = import.meta.env.VITE_NEXCONN_APP_KEY || channelData.appKey || 'pgyu6atqpclfu';
 
         // 3. Request official Nexconn access token from secure backend endpoint
         let token = '';

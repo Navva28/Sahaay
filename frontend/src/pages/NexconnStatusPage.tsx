@@ -44,7 +44,7 @@ export const NexconnStatusPage: React.FC = () => {
     return () => unsub();
   }, []);
 
-  const clientAppKey = import.meta.env.VITE_NEXCONN_APP_KEY || '';
+  const clientAppKey = import.meta.env.VITE_NEXCONN_APP_KEY || 'pgyu6atqpclfu';
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">

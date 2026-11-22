@@ -59,6 +59,21 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Root Info
+app.get('/', (req: Request, res: Response) => {
+  res.json({
+    status: 'online',
+    product: 'Sahaay MVP API',
+    tagline: 'Connecting people. Empowering communities.',
+    endpoints: {
+      health: '/health',
+      auth: '/api/auth',
+      requests: '/api/requests',
+      chat: '/api/chat',
+    },
+  });
+});
+
 // Health Check
 app.get('/health', (req: Request, res: Response) => {
   res.json({
